@@ -9,10 +9,8 @@ error_reporting(E_ALL);
 // self-signed cert disable check
 putenv('LDAPTLS_REQCERT=never');
 
-// authorized non-interactive service credentials
-// this service has permission to read and write user attributes in specified OU(s)
-$svcupn = "service@zsstu.local";
-$svcpwd = "Pa$$.w0rd";
+// $svcupn, $svcpwd
+require("config/credentials.php");
 
 // LDAP server URI
 $server = "ldaps://ad-server-hostname/";
@@ -54,31 +52,31 @@ $messages = Array();
 
 /**
  * Změna hesla.
- * 
+ *
  * Perform user password change.
- * 
+ *
  * @param string $username uživatelské jméno / user name
  * @param string $oldPassword staré heslo / old password
  * @param string $newPassword nové heslo / new password
  * @param string $newPasswordConfirm potvrzení nového hesla / new password confirmation
- * @return bool 
+ * @return bool
  */
 function changePassword(string $username, string $oldPassword, string $newPassword, string $newPasswordConfirm) : bool
-{   
+{
     global $svcpwd, $svcupn;
     global $server, $domain, $managed_ou;
     global $messages;
     global $err_codes;
-    
+
     $con = ldap_connect($server);
     ldap_set_option($con, LDAP_OPT_REFERRALS, 0);
     ldap_set_option($con, LDAP_OPT_PROTOCOL_VERSION, 3);
     // self-signed; don't check certificate
     ldap_set_option($con, LDAP_OPT_X_TLS_REQUIRE_CERT, LDAP_OPT_X_TLS_NEVER);
-    
+
     // bind service account
     ldap_bind($con, $svcupn, $svcpwd);
-    
+
     // normalize username
     $user = $username;
     if (strpos($username, "@") !== false)
@@ -88,81 +86,81 @@ function changePassword(string $username, string $oldPassword, string $newPasswo
     } else {
         $user = $username . "@" . $domain;
     }
- 
+
     // lookup in managed OU
     $user_search = ldap_search($con, $managed_ou, "(|(userprincipalname=" . $user . ")(mail=" . $user . "))");
-    
+
     if ($user_search === false)
     {
         // "Operation cannot be performed, try again later."
         $messages[] = "Nebylo možné provést požadovanou operaci, zkuste to později.";
         return false;
     }
-    
+
     $user_get = ldap_get_entries($con, $user_search);
-    
+
     if ((int) $user_get["count"] < 1)
     {
         // "User account is invalid."
         $messages[] = "Uživatelský účet není platný.";
         return false;
     }
-    
+
     $user_entry = ldap_first_entry($con, $user_search); // first entry
     $user_dn = ldap_get_dn($con, $user_entry); // user DN
-    
+
     if (strlen($newPassword) < 8)
     {
         // "Your new password is too short (must be at least 8 characters long)."
         $messages[] = "Zadané heslo je příliš krátké (je vyžadováno 8 a více znaků).";
         return false;
     }
-    
+
     if (!preg_match("/[0-9]/", $newPassword))
     {
         // "Your new password must contain at least one digit."
         $messages[] = "Nové heslo musí obsahovat alespoň jednu číslici.";
         return false;
     }
-    
+
     if (!preg_match("/[a-zA-Z]/", $newPassword))
     {
         // "Your new password must contain at least one letter."
         $messages[] = "Nové heslo musí obsahovat alespoň jedno písmeno.";
         return false;
     }
-    
+
     if (!preg_match("/[A-Z]/", $newPassword))
     {
         // "Your new password must contain at least one uppercase letter."
         $messages[] = "Nové heslo musí obsahovat alespoň jedno velké písmeno.";
         return false;
     }
-    
+
     if (!preg_match("/[a-z]/", $newPassword))
     {
         // "Your new password must contain at least one lowercase letter."
         $messages[] = "Nové heslo musí obsahovat alespoň jedno malé písmeno.";
         return false;
     }
-    
+
     if (!preg_match('/[\'\/~`\!@#\$%\^&\*\(\)_\-\+=\{\}\[\]\|;:"\<\>,\.\?\\\]/', $newPassword))
     {
         // "Your new password must contain at least one special character."
         $messages[] = "Nové heslo musí obsahovat alespoň jeden zvláštní znak.";
         return false;
     }
-    
+
     if ($newPassword != $newPasswordConfirm )
     {
         // "Your new passwords do not match."
         $messages[] = "Nově zadaná hesla se neshodují.";
         return false;
     }
-    
+
     // check user account
     $login_check = login($user, $oldPassword);
-    
+
     // can be changed?
     if (!$err_codes[$login_check][0]) {
         // "Your password cannot be changed - ... "
@@ -172,15 +170,15 @@ function changePassword(string $username, string $oldPassword, string $newPasswo
         // "Your password can be changed (...)"
         $messages[] = "Heslo může být změněno (" . $err_codes[$login_check][1] . ").";
     }
-    
+
     // create new password (works with MS Active Directory 2016)
     $new_pwd = (mb_convert_encoding("\"" . $newPassword . "\"", 'UTF-16LE', 'UTF-8'));
-    
+
     // create new entry
     $entry = Array();
     $entry["unicodePwd"] = $new_pwd; // unicodePwd
     $entry["pwdLastSet"] = -1; // make new password immediately active
-    
+
     // change password
     if (ldap_modify($con, $user_dn, $entry) === true)
     {
@@ -192,7 +190,7 @@ function changePassword(string $username, string $oldPassword, string $newPasswo
         $messages[] = "Heslo nebylo možné změnit. Kontaktujte správce.";
         return false;
     }
-    
+
 }
 
 /********************************************************************************/
@@ -200,9 +198,9 @@ function changePassword(string $username, string $oldPassword, string $newPasswo
 /**
  * Ověření přihlášení do LDAP se starým heslem a získání rozšířeného stavového
  * kódu pro vyřízení žádosti.
- * 
+ *
  * Attempt to get extended status code for this user account.
- * 
+ *
  * @param string $username uživatelské jméno / user name
  * @param string $password heslo / current password
  * @return string stavový kód / status code
@@ -210,25 +208,25 @@ function changePassword(string $username, string $oldPassword, string $newPasswo
 function login(string $username, string $password) : string
 {
     global $server;
-    
+
     $con = ldap_connect($server);
     ldap_set_option($con, LDAP_OPT_REFERRALS, 0);
     ldap_set_option($con, LDAP_OPT_PROTOCOL_VERSION, 3);
-    
+
     // bind attempt as user
     $user_bind = ldap_bind($con, $username, $password);
-    
+
     // check for error
     if (!$user_bind) {
-        
+
         // check for extended error information
         $ext_err = "";
         if (ldap_get_option($con, LDAP_OPT_DIAGNOSTIC_MESSAGE, $ext_err))
         {
-            
+
             $err_code = "0";
             preg_match("/(?<=data\s).*?(?=\,)/", $ext_err, $err_code);
-            
+
             // extended error code
             return $err_code[0];
         } else {
@@ -236,7 +234,7 @@ function login(string $username, string $password) : string
             return "0";
         }
     }
-    
+
     // success code
     return "-";
 }
@@ -256,11 +254,11 @@ function login(string $username, string $password) : string
     </head>
 
     <body>
-        
+
         <div id="container" class="containter-fluid">
             <div class="row row-cols-1">
                 <h1>ZŠ Pardubice - Studánka</h1>
-                
+
                 <div class="alert alert-info">
                     Poštovní a&nbsp;další služby jsou pro&nbsp;zaměstnance
                     a&nbsp;žáky školy k&nbsp;dispozici v&nbsp;hostovaném prostředí
@@ -268,7 +266,7 @@ function login(string $username, string $password) : string
                 </div>
 
                 <h2>Změna hesla</h2>
-                
+
                 <div class="alert alert-info">
                     Zde je možné provést samoobslužnou změnu hesla
                     <strong>žákovského účtu</strong>.<br /><br />
@@ -277,10 +275,10 @@ function login(string $username, string $password) : string
                     jednu číslici a&nbsp;alespoň jeden symbol (tečka, pomlčka,
                     hvězdička,&nbsp;&hellip;).
                 </div>
-            
+
             </div>
-            
-            
+
+
             <div class="row row-cols-1" id="messages">
 <?php
 
@@ -294,22 +292,22 @@ if ( filter_input(INPUT_POST, 'change') !== null ) {
             (string) filter_input(INPUT_POST, 'newPassword1'),
             (string) filter_input(INPUT_POST, 'newPassword2')
             );
-        
+
     // display messages
     foreach ($messages as $message) {
         echo "<div class=\"alert alert-primary\">" . $message . "</div>\n";
     }
-    
+
 }
 
 ?>
             </div>
-            
+
             <div class="row row-cols-1" id="form">
-                
+
                 <form action="/" name="changePassword" method="post">
                     <div class="form-group">
-                        
+
                         <label for="username">Uživatel</label>
                         <div class="input-group mb-2 mr-sm-2">
                             <div class="input-group-prepend">
@@ -318,7 +316,7 @@ if ( filter_input(INPUT_POST, 'change') !== null ) {
                             <input type="text" class="form-control" id="username" name="username" placeholder="novak.adam@zs-studanka.cz">
                         </div>
                     </div>
-                    
+
                     <div class="form-group">
                         <label for="oldPassword">Původní heslo</label>
                         <div class="input-group mb-2 mr-sm-2">
@@ -328,7 +326,7 @@ if ( filter_input(INPUT_POST, 'change') !== null ) {
                             <input type="password" class="form-control" id="oldPassword" name="oldPassword">
                         </div>
                     </div>
-                    
+
                     <div class="form-group">
                       <label for="newPassword1">Nové heslo</label>
                       <div class="input-group mb-2 mr-sm-2">
@@ -338,7 +336,7 @@ if ( filter_input(INPUT_POST, 'change') !== null ) {
                       <input type="password" class="form-control" id="newPassword1" name="newPassword1">
                       </div>
                     </div>
-                    
+
                     <div class="form-group">
                       <label for="newPassword2">Ověření nového hesla</label>
                       <div class="input-group mb-2 mr-sm-2">
@@ -348,11 +346,11 @@ if ( filter_input(INPUT_POST, 'change') !== null ) {
                       <input type="password" class="form-control" id="newPassword2" name="newPassword2">
                       </div>
                     </div>
-                    
+
                     <div class="form-group">
                         <input type="hidden" name="change" value="<?php echo md5(time()); ?>">
                     </div>
-                           
+
                     <div class="row row-cols-2">
                         <div class="col">
                             <button id="change" type="submit" class="btn btn-primary">Změnit heslo</button>
@@ -362,11 +360,11 @@ if ( filter_input(INPUT_POST, 'change') !== null ) {
                         </div>
                     </div>
                 </form>
-                
+
             </div>
-            
+
             <div class="row row-cols-1"><small class="text-muted">2020 ICT ZŠ Pardubice - Studánka</small></div>
-            
+
         </div>
 
     </body>
